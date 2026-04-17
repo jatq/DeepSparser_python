@@ -1,0 +1,5 @@
+numpy>=1.21
+torch>=1.10
+pyyaml>=6.0
+matplotlib>=3.5
+requests>=2.25

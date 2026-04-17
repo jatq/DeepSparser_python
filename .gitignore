@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+venv/
+.env/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data files (download via download_data.py)
+dataset/real/*.npy
+dataset/synthetic/*.npz
+
+# Trained model weights (tracked intentionally)
+# model/*.pt
+
+# Output figures
+results_*.png
+
+# OS files
+.DS_Store
+Thumbs.db

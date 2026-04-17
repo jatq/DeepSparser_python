@@ -3,176 +3,206 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Conv
+
 class ConvBlock(nn.Module):
-    def __init__(self, ic, oc, ks = 3, s=2):
+    def __init__(self, in_channels, out_channels, kernel_size=3, stride=2):
         super().__init__()
-        self.conv = nn.Conv1d(ic, oc, kernel_size=ks, stride=s, padding=ks//2)
-        self.bn = nn.BatchNorm1d(oc)
+        self.conv = nn.Conv1d(
+            in_channels, out_channels, kernel_size, stride,
+            padding=kernel_size // 2,
+        )
+        self.bn = nn.BatchNorm1d(out_channels)
         self.relu = nn.ReLU()
+
     def forward(self, x):
         return self.relu(self.bn(self.conv(x)))
 
-# Deconv
+
 class DeconvBlock(nn.Module):
-    def __init__(self, ic, oc, ks = 3, s = 2, output_padding = 1):
+    def __init__(self, in_channels, out_channels, kernel_size=3, stride=2,
+                 output_padding=1):
         super().__init__()
-        self.deconv = nn.ConvTranspose1d(ic, oc, kernel_size=ks, stride=s, padding=ks//2, output_padding=output_padding)
-        self.bn = nn.BatchNorm1d(oc)
-        self.relu = nn.ReLU() 
+        self.deconv = nn.ConvTranspose1d(
+            in_channels, out_channels, kernel_size, stride,
+            padding=kernel_size // 2, output_padding=output_padding,
+        )
+        self.bn = nn.BatchNorm1d(out_channels)
+        self.relu = nn.ReLU()
+
     def forward(self, x):
         return self.relu(self.bn(self.deconv(x)))
 
-# Transpose
-class Transpose(nn.Module):
-    def __init__(self, dims=(1,2)):
-        super().__init__()
-        self.dims = dims
-    def forward(self, x):
-        return x.transpose(*self.dims)
 
-# Squeeze
-class Squeeze(nn.Module):
-    def __init__(self, dim=1) -> None:
-        super().__init__()
-        self.dim = dim
-    def forward(self, x):
-        return x.squeeze(dim=self.dim)
-
-# Denosing Autoencoder
 class DAE(nn.Module):
-    def __init__(self, config) -> None:
-        super().__init__()    
-        self.shourtcut_index = [np.array([0, 1, 2]), np.array([5,6,7])]
-        encoder_chans = [config.patch_n] + config.dae_dims
-        shortcut_chans = []
+    """Denoising Autoencoder with U-Net-style skip connections.
+
+    Architecture (default dae_dims=[32,64,128,256,128,64,32,16]):
+        Encoder : patch_n → 32 → 64 → 128 → 256   (ConvBlocks, stride=2)
+        Decoder : 256 → 128 → 64 → 32 → 16         (DeconvBlocks, stride=2)
+        Head    : 16 → 1                             (Conv1d 1×1)
+    Skip connections link encoder layers {0,1,2} to decoder layers {5,6,7}.
+    """
+
+    _SKIP_SAVE = {0, 1, 2}
+    _SKIP_CAT = {5, 6, 7}
+
+    def __init__(self, config):
+        super().__init__()
+        channels = [config.patch_n] + config.dae_dims
+
         self.unet = nn.ModuleList()
-        for i, (ic, oc) in enumerate(zip(encoder_chans[:-1], encoder_chans[1:])):
-            shortcut_chans.append(oc) if i in self.shourtcut_index[0] else None
-            extra_ic = shortcut_chans.pop() if i in self.shourtcut_index[1] else 0
-            self.unet.append(
-                DeconvBlock(ic + extra_ic, oc)
-                if (ic > oc) else
-                ConvBlock(ic + extra_ic, oc))
-        
-        self.unet.append(nn.Conv1d(oc, 1, kernel_size=1))
+        skip_channels = []
+        for i, (in_ch, out_ch) in enumerate(zip(channels[:-1], channels[1:])):
+            if i in self._SKIP_SAVE:
+                skip_channels.append(out_ch)
+            extra = skip_channels.pop() if i in self._SKIP_CAT else 0
+            block = DeconvBlock if (in_ch + extra > out_ch) else ConvBlock
+            self.unet.append(block(in_ch + extra, out_ch))
+        self.unet.append(nn.Conv1d(channels[-1], 1, kernel_size=1))
 
     def forward(self, x):
-        # inputs:(batch, patch_n, embed_dim)
-        shortcuts = []
+        skips = []
         for i, layer in enumerate(self.unet):
-            x  = layer(x)
-            if i in self.shourtcut_index[0]:
-                shortcuts.append(x)
-                
-            elif i in self.shourtcut_index[1]-1:
-                x = torch.cat([x, shortcuts.pop()], dim=1)
+            if i in self._SKIP_CAT:
+                x = torch.cat([x, skips.pop()], dim=1)
+            x = layer(x)
+            if i in self._SKIP_SAVE:
+                skips.append(x)
         return x
 
-# Deep Embedding
+
 class DeepSparser(nn.Module):
+    """End-to-end dual-sparse transform learning for signal denoising.
+
+    Pipeline: DCT → learnable W₁ → DAE → inverse W₂ → IDCT
+    """
+
     def __init__(self, config):
-        super(DeepSparser, self).__init__()
+        super().__init__()
         self.config = config
-        self.register_buffer('dct_weight', self._generate_dct_weight(False))
-        self.register_buffer('idct_weight', self._generate_dct_weight(True))
+
+        self.register_buffer('dct_weight', self._build_dct_basis(inverse=False))
+        self.register_buffer('idct_weight', self._build_dct_basis(inverse=True))
         self.register_buffer('identity', torch.eye(config.embed_dim, config.dct_width))
+
         self.embed = nn.Conv1d(config.dct_width, config.embed_dim, 1, bias=False)
         self.inverse_embed = nn.Conv1d(config.embed_dim, config.dct_width, 1, bias=False)
+
         if config.init_embedding:
-            self.init_embeddding_layer()
-        self.fix_embedding_layer(config.fix_embedding)
+            self._init_embedding_weights()
+        self._set_embedding_trainable(not config.fix_embedding)
 
         self.dae = DAE(config)
-        self.mae = nn.L1Loss(reduction='mean')
-        self.mse = nn.MSELoss(reduction='mean')
 
-    def init_embeddding_layer(self):
-        self.embed.weight.data = torch.eye(self.config.embed_dim, self.config.dct_width).unsqueeze(-1)
-        self.inverse_embed.weight.data = torch.eye(self.config.dct_width, self.config.embed_dim).unsqueeze(-1)
+    def _init_embedding_weights(self):
+        self.embed.weight.data = torch.eye(
+            self.config.embed_dim, self.config.dct_width,
+        ).unsqueeze(-1)
+        self.inverse_embed.weight.data = torch.eye(
+            self.config.dct_width, self.config.embed_dim,
+        ).unsqueeze(-1)
 
-    def fix_embedding_layer(self, is_fixed=False):
-        self.embed.requires_grad = not is_fixed
-        self.inverse_embed.requires_grad = not is_fixed
-
+    def _set_embedding_trainable(self, trainable=True):
+        for p in self.embed.parameters():
+            p.requires_grad_(trainable)
+        for p in self.inverse_embed.parameters():
+            p.requires_grad_(trainable)
 
     def forward(self, y):
-        # y|s: (bs, n)
-        y_dct = self._dct(y.unsqueeze(1).float())                # -> (bs, dct_width, patches)
-        (bs, dct_width, patches) = y_dct.shape
-        y_embed = self.embed(y_dct)                             # -> (bs, embed_dim, patches)
-        y_patches = self._split_patches(y_embed)                # -> (bs * patches, patch_n, embed_dim)
-        y_dae = self.dae(y_patches).permute(0, 2, 1)            # -> (bs * patches, embed_dim, 1)
-        y_dct_hat = self.inverse_embed(y_dae).squeeze(-1)       # -> (bs  * patches, dct_width)
-        y_dct_hat = y_dct_hat.reshape(bs, patches, dct_width).permute(0, 2, 1)  # -> (bs, dct_width, patches)
-        return y_dct_hat
-        
-    def trainloss(self, y, s, embed_loss_weight=0.0):
-        y, y_std = self.normalization_1d(y)
+        """y: (bs, signal_len) → DCT coefficients (bs, dct_width, n_patches)."""
+        y_dct = self._dct(y.unsqueeze(1).float())
+        bs, dct_width, n_patches = y_dct.shape
+
+        y_embed = self.embed(y_dct)                              # (bs, embed_dim, n_patches)
+        patches = self._extract_patches(y_embed)                 # (bs*n_patches, patch_n, embed_dim)
+        denoised = self.dae(patches).permute(0, 2, 1)            # (bs*n_patches, embed_dim, 1)
+        reconstructed = self.inverse_embed(denoised).squeeze(-1) # (bs*n_patches, dct_width)
+
+        return reconstructed.reshape(bs, n_patches, dct_width).permute(0, 2, 1)
+
+    def compute_loss(self, y, s, embed_loss_weight=0.0):
+        y, y_std = self._normalize(y)
         s = s / y_std
+
         y_dct_hat = self.forward(y)
         s_dct = self._dct(s.unsqueeze(1).float())
-        loss = self.mae(y_dct_hat, s_dct)
-        
+        loss = F.l1_loss(y_dct_hat, s_dct)
+
         if embed_loss_weight > 0:
-            loss += embed_loss_weight * self.embed_loss()
+            w_product = torch.matmul(
+                self.embed.weight.squeeze(-1),
+                self.inverse_embed.weight.squeeze(-1),
+            )
+            loss = loss + embed_loss_weight * F.mse_loss(w_product, self.identity)
         return loss
-    
-    def embed_loss(self):
-        return self.mse(torch.matmul(self.embed.weight.squeeze(-1), self.inverse_embed.weight.squeeze(-1)), self.identity)
-    
+
+    # keep backward-compatible alias
+    trainloss = compute_loss
+
     def denoise(self, y):
-        device = next(self.parameters()).device
+        device = self.dct_weight.device
         if not isinstance(y, torch.Tensor):
-            y = torch.tensor(y, dtype=torch.float32).to(device)
-        if y.ndim  == 1:
+            y = torch.tensor(y, dtype=torch.float32, device=device)
+        if y.ndim == 1:
             y = y.unsqueeze(0)
-        y, y_std = self.normalization_1d(y)
+
+        y, y_std = self._normalize(y)
         with torch.no_grad():
             self.eval()
-            y_dct_hat = self.forward(y)
-            y_hat = self._idct(y_dct_hat)
+            y_hat = self._idct(self.forward(y))
         return (y_hat * y_std).squeeze(0).cpu().numpy()
 
+    # ------------------------------------------------------------------ #
+    #  DCT / IDCT
+    # ------------------------------------------------------------------ #
+
     def _dct(self, x):
-        return F.conv1d(x, self.dct_weight, stride = self.config.dct_stride, bias=None)
-    
+        return F.conv1d(x, self.dct_weight, stride=self.config.dct_stride)
+
     def _idct(self, x):
-        device = next(self.parameters()).device
-        x =  F.conv1d(x, self.idct_weight, stride = 1, bias=None)
-        bs, dct_width, patches = x.shape
+        """Inverse DCT with overlap-add averaging (vectorised via F.fold)."""
+        x = F.conv1d(x, self.idct_weight)
+        bs, width, n_patches = x.shape
+        out_len = (n_patches - 1) * self.config.dct_stride + width
 
-        res = torch.zeros((bs, (patches - 1) * self.config.dct_stride + dct_width), dtype=torch.float32).to(device)
-        w = torch.zeros((patches, res.shape[1]), dtype=torch.float32).to(device)
-        for i in range(patches):
-            res[:, i*self.config.dct_stride:i*self.config.dct_stride+dct_width] += x[:, :, i]
-            w[i, i*self.config.dct_stride:i*self.config.dct_stride+dct_width] = 1.0
-        return res/w.sum(axis=0)
+        output = F.fold(
+            x, output_size=(1, out_len),
+            kernel_size=(1, width), stride=(1, self.config.dct_stride),
+        )
+        norm = F.fold(
+            torch.ones_like(x), output_size=(1, out_len),
+            kernel_size=(1, width), stride=(1, self.config.dct_stride),
+        )
+        return (output / norm).reshape(bs, out_len)
 
+    def _build_dct_basis(self, inverse=False):
+        N = self.config.dct_width
+        n = torch.arange(N, dtype=torch.float32)
+        k = torch.arange(N, dtype=torch.float32)
+        basis = torch.cos(torch.pi * k[:, None] * (2 * n[None, :] + 1) / (2 * N))
+        basis[0] *= (1 / N) ** 0.5
+        basis[1:] *= (2 / N) ** 0.5
+        return basis.T.unsqueeze(2) if inverse else basis.unsqueeze(1)
 
-    def _generate_dct_weight(self, is_idct=False):
-        w = torch.zeros((self.config.dct_width, self.config.dct_width), dtype=torch.float32)
-        w[0, :] = 1 * np.sqrt(1 / self.config.dct_width)
-        for i in range(1, self.config.dct_width):
-            w[i, :] = torch.cos(torch.pi * i * (2 * torch.arange(self.config.dct_width) + 1) / (2 * self.config.dct_width)) * np.sqrt(2 / self.config.dct_width)
-        return w.unsqueeze(1) if not is_idct else w.T.unsqueeze(2)
-    
-    def _split_patches(self, x_dct):
-        # x_dct: (bs, dct_width, patches)
-        patches = x_dct.shape[-1]
-        x_dct_pad = F.pad(x_dct, (self.config.patch_n//2, self.config.patch_n//2))
-        mask = torch.arange(patches)[None,:].repeat(self.config.patch_n, 1) + \
-            torch.arange(self.config.patch_n)[:,None].repeat(1, patches)
-            
-        # (bs, dct_width, patch_n, patches_n)
-        patches =  x_dct_pad[:, :, mask]
-        # (bs * patches_n, patch_n, dct_width)
-        patches = patches.permute(0, 3, 2, 1).reshape(x_dct.shape[0] * patches.shape[-1], self.config.patch_n, self.config.embed_dim)
-        return patches
-    
+    # ------------------------------------------------------------------ #
+    #  Patching / normalisation
+    # ------------------------------------------------------------------ #
+
+    def _extract_patches(self, x):
+        """Sliding-window context patches along the temporal axis.
+
+        x: (bs, embed_dim, n_patches) → (bs*n_patches, patch_n, embed_dim)
+        """
+        bs, embed_dim, n_patches = x.shape
+        half = self.config.patch_n // 2
+        x_padded = F.pad(x, (half, half))
+        patches = x_padded.unfold(2, self.config.patch_n, 1)
+        return patches.permute(0, 2, 3, 1).reshape(
+            bs * n_patches, self.config.patch_n, embed_dim,
+        )
+
     @staticmethod
-    def normalization_1d(x):
-        mean = torch.mean(x, axis=-1, keepdims=True)
-        std = torch.std(x, axis=-1, keepdims=True)
-        x = (x-mean)/std
-        return x, std
+    def _normalize(x):
+        mean = x.mean(dim=-1, keepdim=True)
+        std = x.std(dim=-1, keepdim=True)
+        return (x - mean) / std, std

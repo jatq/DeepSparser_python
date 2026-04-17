@@ -29,8 +29,6 @@ DeepSparser/
 ├── utils.py                    # Config loader
 ├── demo_synthetic.ipynb        # Interactive demo (synthetic)
 ├── demo_real.ipynb             # Interactive demo (real data)
-├── tests/
-│   └── test_smoke.py           # Smoke tests (no data needed)
 └── requirements.txt
 ```
 
@@ -76,13 +74,19 @@ python inference.py --config config/config_synthetic.yaml --indices 10 20 30
 python inference.py --config config/config_real.yaml --indices 0 1 2 3 4
 ```
 
-### 4. Run Smoke Tests
+### 4. Interactive Demos
+
+We provide two Jupyter Notebook demos for quick exploration:
+
+- **`demo_synthetic.ipynb`** — Train and visualize denoising on synthetic wavelet signals.
+- **`demo_real.ipynb`** — Train and visualize denoising on real STEAD seismic data.
+
+Open them in Jupyter Notebook or JupyterLab and run all cells:
 
 ```bash
-python tests/test_smoke.py
+jupyter notebook demo_synthetic.ipynb
+jupyter notebook demo_real.ipynb
 ```
-
-These tests verify the full pipeline using random tensors — no dataset download needed.
 
 ## Method Overview
 

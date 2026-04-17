@@ -67,7 +67,7 @@ def train(config):
         batch_losses = []
         for s, y in trainloader:
             s, y = s.to(device), y.to(device)
-            loss = model.trainloss(y, s, config.embed_loss_weight)
+            loss = model.compute_loss(y, s, config.embed_loss_weight)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()

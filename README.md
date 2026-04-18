@@ -1,34 +1,44 @@
 # DeepSparser
 
-**DeepSparser: End-to-End Dual-Sparse Transform Learning for Seismic Signal Denoising**
+**DeepSparser: Structured Dual-Sparse Learning for Efficient Seismic Denoising**
 
-A lightweight end-to-end framework for seismic signal denoising that combines a fixed-basis transform (DCT) with data-adaptive feature learning and a compact denoising autoencoder.
+DeepSparser is an end-to-end framework for efficient seismic denoising that combines a fixed-basis transform, a learnable adaptive transform, and a lightweight denoising autoencoder within a unified cascaded architecture.
 
 ## Highlights
 
-- **Dual-sparse architecture**: Fixed DCT transform → learnable linear transform → denoising autoencoder, cascaded in a unified differentiable pipeline.
-- **Lightweight**: Only 0.43M parameters (95% fewer than DeepSeg), 24.49M FLOPs per forward pass.
+- **Structured dual-sparse framework**: A fixed-basis transform provides an initial sparse representation, a learnable transform refines it in a data-adaptive feature domain, and a lightweight denoising autoencoder suppresses residual noise.
+- **Efficient model design**: Only 0.43M parameters and 24.49M FLOPs per forward pass.
 - **Fast inference**: Processes 24-hour continuous 100 Hz seismic recordings in 9.6 s on a single NVIDIA 2080Ti GPU.
-- **State-of-the-art**: +9.3 dB SNR gain over DeepDenoiser, +5.6 dB over DeepSeg on synthetic benchmarks.
+- **Strong denoising performance**: Improves output SNR by 9.3 dB over DeepDenoiser and 5.6 dB over DeepSeg on the synthetic benchmark.
+
+## Method Overview
+
+Below is the overall architecture of DeepSparser:
+
+![DeepSparser framework](images/deepsparser.png)
+
+The framework first patchifies the noisy input, projects it into a fixed-basis sparse domain, refines the representation through a learnable transform, and then suppresses residual noise with a lightweight denoising autoencoder. The denoised representation is finally reconstructed back to the signal domain.
+
+
 
 ## Project Structure
 
-```
+```text
 DeepSparser/
 ├── model/
-│   └── network.py              # DeepSparser & DAE network definition
+│   └── network.py              # DeepSparser and denoising autoencoder definition
 ├── dataset/
 │   ├── dataset_synthetic.py    # Synthetic wavelet dataset
 │   └── dataset_real.py         # Real STEAD seismic dataset
 ├── config/
 │   ├── config_synthetic.yaml   # Hyperparameters for synthetic experiments
 │   └── config_real.yaml        # Hyperparameters for real-data experiments
-├── train.py                    # CLI training script
-├── inference.py                # CLI inference & visualization script
+├── train.py                    # Training script
+├── inference.py                # Inference and visualization script
 ├── download_data.py            # Dataset download utility
-├── utils.py                    # Config loader
-├── demo_synthetic.ipynb        # Interactive demo (synthetic)
-├── demo_real.ipynb             # Interactive demo (real data)
+├── utils.py                    # Utility functions and config loader
+├── demo_synthetic.ipynb        # Interactive demo on synthetic data
+├── demo_real.ipynb             # Interactive demo on real data
 └── requirements.txt
 ```
 
@@ -126,5 +136,5 @@ Noisy signal y
 The loss function combines L₁ reconstruction loss and inverse-consistency regularization:
 
 ```
-L = L_dae + λ · ‖W₂W₁ − I‖²_F
+L = L_rec + λ · L_reg
 ```

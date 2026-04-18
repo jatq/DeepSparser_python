@@ -128,24 +128,3 @@ The loss function combines L₁ reconstruction loss and inverse-consistency regu
 ```
 L = L_dae + λ · ‖W₂W₁ − I‖²_F
 ```
-
-## Citation
-
-If you find this work useful, please cite:
-
-```bibtex
-@article{deepsparser2026,
-  title   = {DeepSparser: End-to-End Dual-Sparse Transform Learning for Seismic Signal Denoising},
-  author  = {},
-  journal = {submitted},
-  year    = {2026}
-}
-```
-
-## Acknowledgements
-
-This work was supported by the National Natural Science Foundation of China (Grant No. 62171291), Shenzhen Science and Technology Innovation Commission Project (No. JCYJ20220818101609021) and Shenzhen Stability Support Program (No. 20231127153416001).
-
-## License
-
-This project is released for academic research purposes. Please contact the authors for commercial use.
